@@ -2,6 +2,7 @@ import os
 from telethon import TelegramClient
 from supabase import create_client
 import asyncio
+from datetime import datetime, timedelta
 
 # Leer las variables de entorno
 api_id = int(os.environ.get("TELEGRAM_API_ID"))  # Asegúrate de que sea un entero

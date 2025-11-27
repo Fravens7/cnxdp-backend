@@ -2,8 +2,8 @@ from telethon import TelegramClient
 from supabase import create_client
 import asyncio
 
-api_id = 32076891
-api_hash = "8cacf5236a2c3f09c56fab48dcd6096c"
+api_id = int(os.environ.get("32076891"))
+api_hash = os.environ.get("8cacf5236a2c3f09c56fab48dcd6096c"))
 
 SUPABASE_URL = "https://vbcdlzmfysefgubthppt.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZiY2Rsem1meXNlZmd1YnRocHB0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQyMjg0NDgsImV4cCI6MjA3OTgwNDQ0OH0.ZuzVgebJW-hQYQr2a7kacU5YvavzZ4B0VmqCAcXbl4o"

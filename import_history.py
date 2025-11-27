@@ -25,18 +25,21 @@ def extract_columns(text):
     # solo tomamos las primeras 6
     return parts[:6]
 
-# --- Script principal ---
-async def main():
-    await client.start()
-    group = -1002520693250  # tu grupo
-    print("Importando últimos 10 mensajes...")
+# --- Función para importar mensajes de los últimos 7 días ---
+async def import_history():
+    seven_days_ago = datetime.now() - timedelta(days=7)
+    seven_days_ago = seven_days_ago.replace(tzinfo=datetime.timezone.utc)
 
+    # Obtener los mensajes desde hace 7 días
     batch = []
-
-    async for msg in client.iter_messages(group, limit=10):
+    async for msg in client.iter_messages(
+        -1002520693250,  # Tu grupo
+        limit=1000,       # Limitar a 1000 mensajes (ajusta si es necesario)
+        min_date=seven_days_ago
+    ):
         if not msg.text:
             continue
-        # opcional: filtrar mensajes irrelevantes
+        # Filtrar mensajes irrelevantes
         if msg.text.lower() in ["system approved", "test"]:
             continue
 
@@ -56,7 +59,7 @@ async def main():
 
         batch.append(data)
 
-    # --- Insertar o actualizar mensajes sin romper si hay duplicados ---
+    # Insertar o actualizar los mensajes sin duplicar
     if batch:
         try:
             supabase.table("messages").upsert(batch, on_conflict="id").execute()
@@ -64,4 +67,11 @@ async def main():
         except Exception as e:
             print("❌ Error al insertar mensajes:", e)
 
-asyncio.run(main())
+# --- Mantener el script corriendo cada 5 minutos ---
+async def main_loop():
+    while True:
+        await import_history()  # Llamamos a la función principal que importa los mensajes
+        print("Esperando 5 minutos antes de verificar nuevos mensajes...")
+        await asyncio.sleep(60 * 5)  # Espera 5 minutos entre cada ejecución
+
+asyncio.run(main_loop())

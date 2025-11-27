@@ -44,7 +44,7 @@ else:
     print("❌ ERROR: Falta TELEGRAM_SESSION")
     client = TelegramClient("session_render", api_id, api_hash)
 
-# --- FUNCIÓN DE LIMPIEZA Y PROCESAMIENTO (Reutilizable) ---
+# --- FUNCIÓN DE LIMPIEZA Y PROCESAMIENTO ---
 def parse_and_save(message):
     """Procesa un solo mensaje y lo guarda en Supabase"""
     if not message.text: return False
@@ -122,21 +122,29 @@ def parse_and_save(message):
 
     try:
         supabase.table("messages").upsert(payload).execute()
-        # Imprimir log corto para monitoreo en vivo
-        print(f"⚡ [NUEVO] ID:{message.id} | {final_brand} | {safe_data[0] or 'N/A'}")
+        # Log corto para ver actividad en tiempo real
+        print(f"⚡ [SYNC] {final_brand} | {safe_data[0] or 'N/A'} | {message.date}")
         return True
     except Exception as e:
         print(f"❌ Error BD: {e}")
         return False
 
-# --- FASE 1: CATCH-UP (Recuperar lo perdido) ---
+# --- FASE 1: CATCH-UP (CORREGIDA) ---
 async def catch_up_historico():
     print("🔄 FASE 1: Recuperando historial de las últimas 24h...")
+    
+    # Calculamos la fecha límite (hace 24 horas)
     fecha_limite = datetime.now(timezone.utc) - timedelta(hours=24)
     count = 0
     
-    # iter_messages va del más nuevo al más viejo
-    async for message in client.iter_messages(TARGET_GROUP, min_date=fecha_limite):
+    # CORRECCIÓN: Quitamos min_date y filtramos MANUALMENTE
+    async for message in client.iter_messages(TARGET_GROUP):
+        # Si el mensaje es más viejo que 24h, detenemos el bucle
+        if message.date < fecha_limite:
+            print("⏹ Límite de 24h alcanzado. Deteniendo recuperación histórica.")
+            break
+            
+        # Si es reciente, lo procesamos
         parse_and_save(message)
         count += 1
         if count % 50 == 0: print(f"   ... procesados {count} históricos")
@@ -146,7 +154,8 @@ async def catch_up_historico():
 # --- FASE 2: TIEMPO REAL (Event Listener) ---
 @client.on(events.NewMessage(chats=TARGET_GROUP))
 async def handler_nuevo_mensaje(event):
-    # Esta función se dispara AUTOMÁTICAMENTE cuando llega un mensaje
+    # Esta función se dispara AUTOMÁTICAMENTE cuando llega un mensaje nuevo
+    print("🔔 Nuevo mensaje detectado en tiempo real:")
     parse_and_save(event.message)
 
 # --- MAIN ---
@@ -160,7 +169,10 @@ if __name__ == "__main__":
     client.start()
     
     # 3. Ejecutar recuperación de historial (solo una vez al inicio)
-    client.loop.run_until_complete(catch_up_historico())
+    try:
+        client.loop.run_until_complete(catch_up_historico())
+    except Exception as e:
+        print(f"⚠️ Error no crítico en historial: {e}")
     
     # 4. Mantenerse escuchando nuevos eventos para siempre
     print("👂 FASE 2: Escuchando nuevos mensajes en tiempo real...")

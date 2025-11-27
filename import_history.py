@@ -1,78 +1,172 @@
 import os
+import asyncio
+import re
+from datetime import datetime, timedelta, timezone
 from telethon import TelegramClient
 from supabase import create_client
-import asyncio
-from datetime import datetime, timedelta
 
-# Leer las variables de entorno
-api_id = int(os.environ.get("TELEGRAM_API_ID"))  # Asegúrate de que sea un entero
+# --- 1. CONFIGURACIÓN DE ENTORNO (CLOUD) ---
+# Intentamos leer de variables de entorno (Render), si no existen, usa valores por defecto o lanza error
+api_id = os.environ.get("TELEGRAM_API_ID")
 api_hash = os.environ.get("TELEGRAM_API_HASH")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+TARGET_GROUP = int(os.environ.get("TARGET_GROUP_ID", "-1002520693250")) # Tu grupo por defecto
 
-# Conectar a Supabase y Telegram
+# Validación básica
+if not api_id or not api_hash:
+    # Si estás probando local, puedes descomentar y poner tus claves aquí temporalmente
+    # api_id = 32076891
+    # api_hash = "..."
+    print("⚠️ ADVERTENCIA: Faltan variables de entorno TELEGRAM_API_ID o HASH")
+
+# Conversión a entero para Telethon
+try:
+    api_id = int(api_id)
+except:
+    pass
+
+# --- 2. LISTAS DE DETECCIÓN INTELIGENTE ---
+BRANDS = ["M1", "B1", "M2", "K1", "B2", "B3", "B4"]
+
+SYSTEM_KEYWORDS = [
+    "SYSTEM", "SYS APP", "AUTO SYS", "AUTO APP", "APPROVED TEAM", "TEST",
+    "AUTO SETTLE", "SETTLE", "CANCELLED", "REJECTED", "SUCCESS", "DONE", 
+    "WITHDRAW ALREADY", "NOTE TEAM", "ALL PENDING", "ALREADY", "PLS", "PLEASE",
+    "CAX", "CANCEL", "@"
+]
+
+# --- 3. CONEXIÓN ---
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+# "session" buscará el archivo session.session en la carpeta de Render
 client = TelegramClient("session", api_id, api_hash)
 
-# --- Función para extraer columnas ---
-def extract_columns(text):
-    # separar por |
-    parts = [p.strip() for p in text.split("|")]
+# --- 4. FUNCIONES DE LIMPIEZA ---
+def limpiar_parte(texto):
+    """Limpia markdown (*, _), espacios y caracteres invisibles"""
+    if not texto: return None
+    texto = re.sub(r'[*_~`]', '', texto) # Quitar Markdown
+    texto = " ".join(texto.split())      # Quitar espacios dobles/saltos
+    return texto.strip()
 
-    # completar hasta 6 columnas (brand, type, extra1, extra2, extra3, extra4)
-    while len(parts) < 6:
-        parts.append(None)
-    
-    # solo tomamos las primeras 6
-    return parts[:6]
+async def sincronizar_hoy():
+    print(f"📂 Iniciando cliente Telegram...")
+    await client.start()
 
-# --- Función para importar mensajes de los últimos 7 días ---
-async def import_history():
-    # Fecha de hace 7 días
-    seven_days_ago = datetime.now() - timedelta(days=7)
-    seven_days_ago = seven_days_ago.replace(tzinfo=datetime.timezone.utc)
+    try:
+        # --- 5. LÓGICA DE FECHAS DINÁMICAS (CRON) ---
+        # Calculamos el rango "Ahora" vs "Hace 2 días"
+        ahora = datetime.now(timezone.utc)
+        hace_dos_dias = ahora - timedelta(days=2)
+        
+        print(f"🔗 Conectando al grupo {TARGET_GROUP}...")
+        entity = await client.get_entity(TARGET_GROUP)
+        print(f"✅ Grupo detectado: '{entity.title}'")
+        
+        print(f"⏳ Buscando mensajes desde: {hace_dos_dias.strftime('%Y-%m-%d %H:%M')} hasta Ahora")
 
-    # Obtener los mensajes desde hace 7 días, sin límite de cantidad
-    batch = []
-    async for msg in client.iter_messages(
-        -1002520693250,  # Tu grupo
-        min_date=seven_days_ago  # Solo mensajes desde hace 7 días
-    ):
-        if not msg.text:
-            continue
-        # Filtrar mensajes irrelevantes
-        if msg.text.lower() in ["system approved", "test"]:
-            continue
+        stats = {"procesados": 0, "actualizados": 0, "rescatados": 0, "sistema": 0}
 
-        print("Mensaje:", msg.text)
-        cols = extract_columns(msg.text)
+        # Iteramos solo los mensajes recientes
+        async for message in client.iter_messages(entity):
+            # Filtro de fecha (Optimización crítica)
+            if not message.date: continue
+            
+            # Si el mensaje es más viejo que 2 días, PARAMOS el script.
+            # Esto hace que el Cron sea rápido y eficiente.
+            if message.date < hace_dos_dias:
+                print(f"⏹ Límite de tiempo alcanzado ({message.date}). Finalizando ejecución.")
+                break 
 
-        data = {
-            "id": msg.id,
-            "brand": cols[0],
-            "type": cols[1],
-            "extra1": cols[2],
-            "extra2": cols[3],
-            "extra3": cols[4],
-            "extra4": cols[5],
-            "date": msg.date.date().isoformat()
-        }
+            if not message.text: continue
 
-        batch.append(data)
+            # --- 6. PROCESAMIENTO Y LIMPIEZA (Igual que tu versión local) ---
+            texto_bruto = message.text
+            raw_parts = re.split(r'[|\n\\]+', texto_bruto)
+            parts = [limpiar_parte(p) for p in raw_parts if limpiar_parte(p)]
 
-    # Insertar o actualizar los mensajes sin duplicar
-    if batch:
-        try:
-            supabase.table("messages").upsert(batch, on_conflict="id").execute()
-            print(f"✔ Mensajes insertados o actualizados correctamente: {len(batch)}")
-        except Exception as e:
-            print("❌ Error al insertar mensajes:", e)
+            if not parts: continue
 
-# --- Mantener el script corriendo cada 5 minutos ---
-async def main_loop():
-    while True:
-        await import_history()  # Llamamos a la función principal que importa los mensajes
-        print("Esperando 5 minutos antes de verificar nuevos mensajes...")
-        await asyncio.sleep(60 * 5)  # Espera 5 minutos entre cada ejecución
+            final_brand = "Otros"
+            data_parts = []
 
-asyncio.run(main_loop())
+            # Detección Sistema
+            es_sistema = False
+            for part in parts:
+                if any(k in part.upper() for k in SYSTEM_KEYWORDS):
+                    es_sistema = True
+                    break
+            
+            if es_sistema:
+                final_brand = "SYSTEM"
+                data_parts = parts
+                stats["sistema"] += 1
+            else:
+                # Detección Marcas
+                marca_encontrada = False
+                for i, parte in enumerate(parts):
+                    p_upper = parte.upper()
+                    
+                    if p_upper in BRANDS:
+                        final_brand = p_upper
+                        marca_encontrada = True
+                        data_parts = parts[:i] + parts[i+1:]
+                        if i > 0: stats["rescatados"] += 1 
+                        break
+                    
+                    if i == 0:
+                        for b in BRANDS:
+                            if re.match(rf"^{b}(\s|-|/|$)", p_upper):
+                                final_brand = b
+                                marca_encontrada = True
+                                resto = parts[i][len(b):].lstrip(" -/")
+                                if resto:
+                                    data_parts = [resto] + parts[1:]
+                                else:
+                                    data_parts = parts[1:]
+                                break
+                        if marca_encontrada: break
+
+                if not marca_encontrada:
+                    final_brand = "Otros"
+                    data_parts = parts
+
+            # --- 7. UPSERT A SUPABASE ---
+            safe_data = [None] * 5
+            for i in range(min(len(data_parts), 5)):
+                safe_data[i] = data_parts[i]
+
+            payload = {
+                "id": message.id,
+                "date": str(message.date),
+                "brand": final_brand,
+                "type": safe_data[0],
+                "extra1": safe_data[1],
+                "extra2": safe_data[2],
+                "extra3": safe_data[3],
+                "extra4": safe_data[4]
+            }
+
+            try:
+                supabase.table("messages").upsert(payload).execute()
+                stats["actualizados"] += 1
+            except Exception as e:
+                print(f"❌ Error Supabase ID {message.id}: {e}")
+
+            stats["procesados"] += 1
+
+        print("\n" + "="*40)
+        print(f"✅ CRON JOB FINALIZADO CON ÉXITO")
+        print(f"📊 Revisados (últimos 2 días): {stats['procesados']}")
+        print(f"💾 Guardados/Actualizados: {stats['actualizados']}")
+        print(f"✨ Marcas Rescatadas: {stats['rescatados']}")
+        print(f"🤖 Sistema Detectado: {stats['sistema']}")
+        print("="*40)
+
+    except Exception as e:
+        print(f"❌ Error Crítico en el Job: {e}")
+
+    await client.disconnect()
+
+if __name__ == "__main__":
+    client.loop.run_until_complete(sincronizar_hoy())

@@ -1,19 +1,31 @@
 import os
 import asyncio
 import re
+import threading
+from http.server import SimpleHTTPRequestHandler, HTTPServer
 from datetime import datetime, timezone, timedelta
 from telethon import TelegramClient
-from telethon.sessions import StringSession # <--- IMPORTANTE
+from telethon.sessions import StringSession
 from supabase import create_client
 
-# --- CONFIGURACIÓN DE ENTORNO (Render) ---
+# --- CONFIGURACIÓN DE ENTORNO ---
 api_id = int(os.environ.get("TELEGRAM_API_ID"))
 api_hash = os.environ.get("TELEGRAM_API_HASH")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 TARGET_GROUP = int(os.environ.get("TARGET_GROUP", "-1002520693250"))
-# Nueva variable para la sesión
 SESSION_STRING = os.environ.get("TELEGRAM_SESSION")
+
+# --- TRUCO PARA RENDER (SERVIDOR FANTASMA) ---
+# Esto mantiene a Render feliz detectando un puerto abierto
+def start_dummy_server():
+    port = int(os.environ.get("PORT", 8080)) # Render asigna un puerto automáticamente
+    try:
+        server = HTTPServer(("", port), SimpleHTTPRequestHandler)
+        print(f"🌍 Servidor Dummy activo en el puerto {port}")
+        server.serve_forever()
+    except Exception as e:
+        print(f"⚠️ Error en servidor dummy (no crítico): {e}")
 
 # --- CONFIGURACIÓN LÓGICA ---
 BRANDS = ["M1", "B1", "M2", "K1", "B2", "B3", "B4"]
@@ -24,15 +36,14 @@ SYSTEM_KEYWORDS = [
     "CAX", "CANCEL", "@"
 ]
 
-# Inicializar clientes
+# Inicializar Supabase
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# --- CAMBIO CRÍTICO AQUÍ: Usamos StringSession ---
+# Inicializar Telegram con StringSession
 if SESSION_STRING:
-    # Si hay una String Session en Render, la usamos
     client = TelegramClient(StringSession(SESSION_STRING), api_id, api_hash)
 else:
-    # Fallback por si acaso (aunque fallará en Render si no configuras la variable)
+    print("❌ ERROR: No se detectó TELEGRAM_SESSION en las variables de entorno.")
     client = TelegramClient("session_render", api_id, api_hash)
 
 def limpiar_parte(texto):
@@ -43,12 +54,11 @@ def limpiar_parte(texto):
     return texto.strip()
 
 async def procesar_mensajes():
-    print(f"🔄 Iniciando ciclo de sincronización...")
+    print(f"🔄 Checkeando mensajes (Últimas 24h)...")
     
     fecha_limite = datetime.now(timezone.utc) - timedelta(hours=24)
     
     batch_data = []
-    total_procesados = 0
     
     async for message in client.iter_messages(TARGET_GROUP, min_date=fecha_limite):
         if not message.text: continue
@@ -115,30 +125,33 @@ async def procesar_mensajes():
         }
         
         batch_data.append(payload)
-        total_procesados += 1
 
     if batch_data:
         try:
             supabase.table("messages").upsert(batch_data).execute()
-            print(f"✅ Sincronizados {len(batch_data)} mensajes recientes.")
+            print(f"✅ Sincronizados {len(batch_data)} mensajes.")
         except Exception as e:
-            print(f"❌ Error guardando en Supabase: {e}")
+            print(f"❌ Error BD: {e}")
     else:
-        print("💤 No hay mensajes nuevos en las últimas 24h.")
+        print("💤 Sin novedades.")
 
 async def main_loop():
-    print("🚀 Bot iniciado en Render.")
-    # start() sin argumentos usará la StringSession cargada
+    print("🚀 Bot Iniciado.")
     await client.start()
     
     while True:
         try:
             await procesar_mensajes()
         except Exception as e:
-            print(f"⚠️ Error en el ciclo principal: {e}")
+            print(f"⚠️ Error ciclo: {e}")
         
-        print("⏳ Esperando 2 minutos...")
+        # Esperar 2 minutos
         await asyncio.sleep(120)
 
 if __name__ == "__main__":
+    # --- ACTIVAR SERVIDOR FANTASMA EN UN HILO APARTE ---
+    # Esto corre en paralelo y engaña a Render para que no nos apague
+    threading.Thread(target=start_dummy_server, daemon=True).start()
+    
+    # Iniciar Bot
     client.loop.run_until_complete(main_loop())

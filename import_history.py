@@ -27,15 +27,15 @@ def extract_columns(text):
 
 # --- Función para importar mensajes de los últimos 7 días ---
 async def import_history():
+    # Fecha de hace 7 días
     seven_days_ago = datetime.now() - timedelta(days=7)
     seven_days_ago = seven_days_ago.replace(tzinfo=datetime.timezone.utc)
 
-    # Obtener los mensajes desde hace 7 días
+    # Obtener los mensajes desde hace 7 días, sin límite de cantidad
     batch = []
     async for msg in client.iter_messages(
         -1002520693250,  # Tu grupo
-        limit=1000,       # Limitar a 1000 mensajes (ajusta si es necesario)
-        min_date=seven_days_ago
+        min_date=seven_days_ago  # Solo mensajes desde hace 7 días
     ):
         if not msg.text:
             continue

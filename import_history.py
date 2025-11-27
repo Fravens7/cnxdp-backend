@@ -3,6 +3,7 @@ import asyncio
 import re
 from datetime import datetime, timezone, timedelta
 from telethon import TelegramClient
+from telethon.sessions import StringSession # <--- IMPORTANTE
 from supabase import create_client
 
 # --- CONFIGURACIÓN DE ENTORNO (Render) ---
@@ -11,6 +12,8 @@ api_hash = os.environ.get("TELEGRAM_API_HASH")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 TARGET_GROUP = int(os.environ.get("TARGET_GROUP", "-1002520693250"))
+# Nueva variable para la sesión
+SESSION_STRING = os.environ.get("TELEGRAM_SESSION")
 
 # --- CONFIGURACIÓN LÓGICA ---
 BRANDS = ["M1", "B1", "M2", "K1", "B2", "B3", "B4"]
@@ -23,32 +26,34 @@ SYSTEM_KEYWORDS = [
 
 # Inicializar clientes
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-client = TelegramClient("session_render", api_id, api_hash)
+
+# --- CAMBIO CRÍTICO AQUÍ: Usamos StringSession ---
+if SESSION_STRING:
+    # Si hay una String Session en Render, la usamos
+    client = TelegramClient(StringSession(SESSION_STRING), api_id, api_hash)
+else:
+    # Fallback por si acaso (aunque fallará en Render si no configuras la variable)
+    client = TelegramClient("session_render", api_id, api_hash)
 
 def limpiar_parte(texto):
     """Limpia markdown (*, _), espacios y caracteres invisibles"""
     if not texto: return None
-    texto = re.sub(r'[*_~`]', '', texto) # Eliminar markdown
-    texto = " ".join(texto.split())      # Eliminar espacios múltiples/nulos
+    texto = re.sub(r'[*_~`]', '', texto) 
+    texto = " ".join(texto.split())      
     return texto.strip()
 
 async def procesar_mensajes():
     print(f"🔄 Iniciando ciclo de sincronización...")
     
-    # Rango: Miramos las últimas 24 horas para asegurar cobertura de 'hoy'
-    # Esto corrige cualquier retraso si el servidor se reinicia.
     fecha_limite = datetime.now(timezone.utc) - timedelta(hours=24)
     
     batch_data = []
     total_procesados = 0
     
-    # Iteramos mensajes desde hace 24 horas hasta ahora
     async for message in client.iter_messages(TARGET_GROUP, min_date=fecha_limite):
         if not message.text: continue
 
         texto_bruto = message.text
-        
-        # --- LÓGICA DE LIMPIEZA (Tu lógica maestra) ---
         raw_parts = re.split(r'[|\n\\]+', texto_bruto)
         parts = [limpiar_parte(p) for p in raw_parts if limpiar_parte(p)]
 
@@ -57,7 +62,6 @@ async def procesar_mensajes():
         final_brand = "Otros"
         data_parts = []
 
-        # 1. Detección de Sistema
         es_sistema = False
         for part in parts:
             part_upper = part.upper()
@@ -69,19 +73,15 @@ async def procesar_mensajes():
             final_brand = "SYSTEM"
             data_parts = parts
         else:
-            # 2. Búsqueda de Marca
             marca_encontrada = False
             for i, parte in enumerate(parts):
                 p_upper = parte.upper()
-                
-                # Coincidencia Exacta
                 if p_upper in BRANDS:
                     final_brand = p_upper
                     marca_encontrada = True
                     data_parts = parts[:i] + parts[i+1:]
                     break
                 
-                # Coincidencia con Prefijo (solo en la primera parte)
                 if i == 0:
                     for b in BRANDS:
                         if re.match(rf"^{b}(\s|-|/|$)", p_upper):
@@ -99,7 +99,6 @@ async def procesar_mensajes():
                 final_brand = "Otros"
                 data_parts = parts
 
-        # 3. Preparar Payload
         safe_data = [None] * 5
         for i in range(min(len(data_parts), 5)):
             safe_data[i] = data_parts[i]
@@ -118,10 +117,8 @@ async def procesar_mensajes():
         batch_data.append(payload)
         total_procesados += 1
 
-    # --- GUARDADO EN LOTE (Más eficiente para Render) ---
     if batch_data:
         try:
-            # upsert maneja duplicados automáticamente por el ID
             supabase.table("messages").upsert(batch_data).execute()
             print(f"✅ Sincronizados {len(batch_data)} mensajes recientes.")
         except Exception as e:
@@ -131,6 +128,7 @@ async def procesar_mensajes():
 
 async def main_loop():
     print("🚀 Bot iniciado en Render.")
+    # start() sin argumentos usará la StringSession cargada
     await client.start()
     
     while True:
@@ -139,7 +137,6 @@ async def main_loop():
         except Exception as e:
             print(f"⚠️ Error en el ciclo principal: {e}")
         
-        # Esperar 2 minutos antes de volver a revisar (tiempo real)
         print("⏳ Esperando 2 minutos...")
         await asyncio.sleep(120)
 

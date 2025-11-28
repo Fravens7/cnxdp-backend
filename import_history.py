@@ -44,9 +44,9 @@ else:
     print("❌ ERROR: Falta TELEGRAM_SESSION")
     client = TelegramClient("session_render", api_id, api_hash)
 
-# --- FUNCIÓN DE LIMPIEZA Y PROCESAMIENTO MEJORADA ---
+# --- FUNCIÓN DE LIMPIEZA Y PROCESAMIENTO (CON AJUSTE DE HORA) ---
 def parse_and_save(message):
-    """Procesa un solo mensaje y lo guarda en Supabase"""
+    """Procesa un solo mensaje y lo guarda en Supabase con hora Local"""
     if not message.text: return False
 
     texto_bruto = message.text
@@ -67,20 +67,15 @@ def parse_and_save(message):
     data_parts = []
     marca_encontrada = False
 
-    # --- CAMBIO IMPORTANTE: PRIORIDAD A LA MARCA ---
-    # Estrategia: Si la PRIMERA parte empieza con una marca, ES esa marca.
-    # Ignoramos si después dice "Cancel" o "System".
-    
+    # 2. PRIORIDAD A LA MARCA (Tu lógica corregida)
     if len(parts) > 0:
         first_part_upper = parts[0].upper()
         
         for b in BRANDS:
-            # Regex: Busca la marca al inicio, seguida de espacio, guion, barra o fin de linea
+            # Regex: Busca la marca al inicio
             if re.match(rf"^{b}(\s|-|/|$)", first_part_upper):
                 final_brand = b
                 marca_encontrada = True
-                
-                # Limpiamos la marca del dato (Ej: De "M1 - Withdrawal" sacamos solo "Withdrawal")
                 resto = parts[0][len(b):].lstrip(" -/")
                 if resto:
                     data_parts = [resto] + parts[1:]
@@ -88,7 +83,7 @@ def parse_and_save(message):
                     data_parts = parts[1:]
                 break
     
-    # Si NO encontramos marca al principio, entonces sí verificamos si es SYSTEM
+    # 3. Si no es marca, buscamos Sistema
     if not marca_encontrada:
         es_sistema = False
         for part in parts:
@@ -100,8 +95,7 @@ def parse_and_save(message):
             final_brand = "SYSTEM"
             data_parts = parts
         else:
-            # Último intento: Buscar marca en cualquier otra posición (búsqueda profunda)
-            # Esto es para casos raros donde la marca no está al principio
+            # Búsqueda profunda
             for i, parte in enumerate(parts):
                 if parte.upper() in BRANDS:
                     final_brand = part.upper()
@@ -118,9 +112,15 @@ def parse_and_save(message):
     for i in range(min(len(data_parts), 5)):
         safe_data[i] = data_parts[i]
 
+    # --- 🕒 AJUSTE HORARIO CRÍTICO (SRI LANKA / INDIA UTC+5:30) ---
+    # Esto mueve el mensaje 5.5 horas hacia adelante para que coincida con tu reporte diario
+    offset = timedelta(hours=5, minutes=30)
+    fecha_local = message.date + offset
+    # ---------------------------------------------------------------
+
     payload = {
         "id": message.id,
-        "date": str(message.date),
+        "date": str(fecha_local), # <--- Guardamos la fecha AJUSTADA
         "brand": final_brand,
         "type": safe_data[0],
         "extra1": safe_data[1],
@@ -131,8 +131,8 @@ def parse_and_save(message):
 
     try:
         supabase.table("messages").upsert(payload).execute()
-        # Log corto para ver actividad en tiempo real
-        print(f"⚡ [SYNC] {final_brand} | {safe_data[0] or 'N/A'} | {message.date}")
+        # Log visual con la hora local para que confirmes en Render
+        print(f"⚡ [SYNC] {final_brand} | {safe_data[0] or 'N/A'} | {fecha_local.strftime('%Y-%m-%d %H:%M:%S')} (Local)")
         return True
     except Exception as e:
         print(f"❌ Error BD: {e}")
@@ -169,12 +169,12 @@ if __name__ == "__main__":
     # 1. Arrancar servidor dummy para Render
     threading.Thread(target=start_dummy_server, daemon=True).start()
     
-    print("🚀 INICIANDO BOT EN MODO HÍBRIDO (Catch-up + Realtime)")
+    print("🚀 INICIANDO BOT CON AJUSTE HORARIO (UTC+5:30)")
     
     # 2. Conectar cliente
     client.start()
     
-    # 3. Ejecutar recuperación de historial (con manejo de errores)
+    # 3. Ejecutar recuperación de historial
     try:
         client.loop.run_until_complete(catch_up_historico())
     except Exception as e:

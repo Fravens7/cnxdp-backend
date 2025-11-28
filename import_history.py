@@ -44,7 +44,7 @@ else:
     print("❌ ERROR: Falta TELEGRAM_SESSION")
     client = TelegramClient("session_render", api_id, api_hash)
 
-# --- FUNCIÓN DE LIMPIEZA Y PROCESAMIENTO ---
+# --- FUNCIÓN DE LIMPIEZA Y PROCESAMIENTO MEJORADA ---
 def parse_and_save(message):
     """Procesa un solo mensaje y lo guarda en Supabase"""
     if not message.text: return False
@@ -65,44 +65,53 @@ def parse_and_save(message):
 
     final_brand = "Otros"
     data_parts = []
+    marca_encontrada = False
 
-    # 2. Detección de Sistema
-    es_sistema = False
-    for part in parts:
-        if any(k in part.upper() for k in SYSTEM_KEYWORDS):
-            es_sistema = True
-            break
+    # --- CAMBIO IMPORTANTE: PRIORIDAD A LA MARCA ---
+    # Estrategia: Si la PRIMERA parte empieza con una marca, ES esa marca.
+    # Ignoramos si después dice "Cancel" o "System".
     
-    if es_sistema:
-        final_brand = "SYSTEM"
-        data_parts = parts
-    else:
-        # 3. Detección de Marca
-        marca_encontrada = False
-        for i, parte in enumerate(parts):
-            p_upper = parte.upper()
-            if p_upper in BRANDS:
-                final_brand = p_upper
+    if len(parts) > 0:
+        first_part_upper = parts[0].upper()
+        
+        for b in BRANDS:
+            # Regex: Busca la marca al inicio, seguida de espacio, guion, barra o fin de linea
+            if re.match(rf"^{b}(\s|-|/|$)", first_part_upper):
+                final_brand = b
                 marca_encontrada = True
-                data_parts = parts[:i] + parts[i+1:]
+                
+                # Limpiamos la marca del dato (Ej: De "M1 - Withdrawal" sacamos solo "Withdrawal")
+                resto = parts[0][len(b):].lstrip(" -/")
+                if resto:
+                    data_parts = [resto] + parts[1:]
+                else:
+                    data_parts = parts[1:]
                 break
-            
-            if i == 0:
-                for b in BRANDS:
-                    if re.match(rf"^{b}(\s|-|/|$)", p_upper):
-                        final_brand = b
-                        marca_encontrada = True
-                        resto = parts[i][len(b):].lstrip(" -/")
-                        if resto:
-                            data_parts = [resto] + parts[1:]
-                        else:
-                            data_parts = parts[1:]
-                        break
-                if marca_encontrada: break
-
-        if not marca_encontrada:
-            final_brand = "Otros"
+    
+    # Si NO encontramos marca al principio, entonces sí verificamos si es SYSTEM
+    if not marca_encontrada:
+        es_sistema = False
+        for part in parts:
+            if any(k in part.upper() for k in SYSTEM_KEYWORDS):
+                es_sistema = True
+                break
+        
+        if es_sistema:
+            final_brand = "SYSTEM"
             data_parts = parts
+        else:
+            # Último intento: Buscar marca en cualquier otra posición (búsqueda profunda)
+            # Esto es para casos raros donde la marca no está al principio
+            for i, parte in enumerate(parts):
+                if parte.upper() in BRANDS:
+                    final_brand = part.upper()
+                    marca_encontrada = True
+                    data_parts = parts[:i] + parts[i+1:]
+                    break
+            
+            if not marca_encontrada:
+                final_brand = "Otros"
+                data_parts = parts
 
     # 4. Preparar Payload
     safe_data = [None] * 5
@@ -129,7 +138,7 @@ def parse_and_save(message):
         print(f"❌ Error BD: {e}")
         return False
 
-# --- FASE 1: CATCH-UP (CORREGIDA) ---
+# --- FASE 1: CATCH-UP ---
 async def catch_up_historico():
     print("🔄 FASE 1: Recuperando historial de las últimas 24h...")
     
@@ -137,24 +146,21 @@ async def catch_up_historico():
     fecha_limite = datetime.now(timezone.utc) - timedelta(hours=24)
     count = 0
     
-    # CORRECCIÓN: Quitamos min_date y filtramos MANUALMENTE
+    # Iteramos manualmente y frenamos si la fecha es vieja
     async for message in client.iter_messages(TARGET_GROUP):
-        # Si el mensaje es más viejo que 24h, detenemos el bucle
         if message.date < fecha_limite:
             print("⏹ Límite de 24h alcanzado. Deteniendo recuperación histórica.")
             break
             
-        # Si es reciente, lo procesamos
         parse_and_save(message)
         count += 1
         if count % 50 == 0: print(f"   ... procesados {count} históricos")
     
     print(f"✅ FASE 1 COMPLETADA. Historial sincronizado ({count} msgs).")
 
-# --- FASE 2: TIEMPO REAL (Event Listener) ---
+# --- FASE 2: TIEMPO REAL ---
 @client.on(events.NewMessage(chats=TARGET_GROUP))
 async def handler_nuevo_mensaje(event):
-    # Esta función se dispara AUTOMÁTICAMENTE cuando llega un mensaje nuevo
     print("🔔 Nuevo mensaje detectado en tiempo real:")
     parse_and_save(event.message)
 
@@ -168,12 +174,12 @@ if __name__ == "__main__":
     # 2. Conectar cliente
     client.start()
     
-    # 3. Ejecutar recuperación de historial (solo una vez al inicio)
+    # 3. Ejecutar recuperación de historial (con manejo de errores)
     try:
         client.loop.run_until_complete(catch_up_historico())
     except Exception as e:
         print(f"⚠️ Error no crítico en historial: {e}")
     
-    # 4. Mantenerse escuchando nuevos eventos para siempre
+    # 4. Mantenerse escuchando nuevos eventos
     print("👂 FASE 2: Escuchando nuevos mensajes en tiempo real...")
     client.run_until_disconnected()
